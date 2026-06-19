@@ -584,6 +584,18 @@ int main(int argc, char ** argv) {
         send_json(res, 200, body);
     });
 
+    // -- /v1/gpu/status : GPU residency announce for the koblem gate.
+    srv.Get("/v1/gpu/status", [&](const httplib::Request &, httplib::Response & res) {
+        const bool loaded = worker_session ? worker_session->is_alive()
+                                           : st.loaded.load();
+        json body = {{"loaded", loaded}};
+        if (loaded && worker_session && !worker_session->worker_gpu().empty())
+            body["gpu"] = worker_session->worker_gpu();
+        else
+            body["gpu"] = nullptr;
+        send_json(res, 200, body);
+    });
+
     // ensure-model helper. In worker mode: spawn + LOAD if not running.
     // In in-process mode: load encoder + tokenizer + score params.
     auto ensure = [&](httplib::Response & res) -> bool {
