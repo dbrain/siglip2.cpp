@@ -336,8 +336,11 @@ bool WorkerSession::send_load_req_locked(const WorkerLoadConfig & cfg) {
     return true;
 }
 
-bool WorkerSession::ensure_loaded_locked(const WorkerLoadConfig & cfg) {
+bool WorkerSession::ensure_loaded_locked(const WorkerLoadConfig & cfg,
+                                         const std::string & want_gpu) {
+    const std::string gpu = want_gpu.empty() ? default_gpu_ : want_gpu;
     if (pid_ > 0 && loaded_ok_
+        && worker_gpu_                == gpu
         && loaded_cfg_.model_path     == cfg.model_path
         && loaded_cfg_.tokenizer_path == cfg.tokenizer_path
         && loaded_cfg_.vision_only    == cfg.vision_only
@@ -345,14 +348,20 @@ bool WorkerSession::ensure_loaded_locked(const WorkerLoadConfig & cfg) {
         return true;
     }
 
-    if (pid_ > 0) kill_worker_locked();
+    if (pid_ > 0) {
+        if (worker_gpu_ != gpu)
+            fprintf(stderr, "siglip2-session: relocating worker '%s' -> '%s'\n",
+                    worker_gpu_.c_str(), gpu.c_str());
+        kill_worker_locked();
+    }
 
-    pid_t child = spawn_worker(argv0_.c_str(), extra_argv_, &fd_);
+    pid_t child = spawn_worker(argv0_.c_str(), extra_argv_, &fd_, gpu);
     if (child < 0) {
         last_error_ = "spawn_worker failed";
         return false;
     }
     pid_ = child;
+    worker_gpu_ = gpu;
 
     FrameHeader hdr{};
     std::vector<uint8_t> payload;
@@ -376,7 +385,7 @@ bool WorkerSession::ensure_loaded_locked(const WorkerLoadConfig & cfg) {
 
 bool WorkerSession::ensure_loaded(const WorkerLoadConfig & cfg) {
     std::lock_guard<std::mutex> lock(io_mutex_);
-    return ensure_loaded_locked(cfg);
+    return ensure_loaded_locked(cfg, std::string());
 }
 
 // Helpers for round-tripping a request: send REQ, recv RESP. On any
@@ -425,10 +434,11 @@ bool WorkerSession::encode_images(
     const std::string &               pooling,
     int                               max_num_patches,
     bool                              return_last_hidden,
-    std::vector<std::vector<float>> & out_embs) {
+    std::vector<std::vector<float>> & out_embs,
+    const std::string &               gpu) {
     std::lock_guard<std::mutex> lock(io_mutex_);
     out_embs.clear();
-    if (!worker_alive_locked() && !ensure_loaded_locked(loaded_cfg_)) {
+    if (!ensure_loaded_locked(loaded_cfg_, gpu)) {
         // last_error_ is already set by ensure_loaded_locked.
         return false;
     }
@@ -491,10 +501,11 @@ bool WorkerSession::encode_images(
 
 bool WorkerSession::encode_texts(
     const std::vector<std::string> &  prompts,
-    std::vector<std::vector<float>> & out_embs) {
+    std::vector<std::vector<float>> & out_embs,
+    const std::string &               gpu) {
     std::lock_guard<std::mutex> lock(io_mutex_);
     out_embs.clear();
-    if (!worker_alive_locked() && !ensure_loaded_locked(loaded_cfg_)) {
+    if (!ensure_loaded_locked(loaded_cfg_, gpu)) {
         return false;
     }
     json req = { {"prompts", prompts} };
@@ -579,11 +590,12 @@ bool WorkerSession::classify(
     int                               max_num_patches,
     bool                              return_logits,
     std::vector<std::vector<float>> & out_scores,
-    std::vector<std::vector<float>> & out_logits) {
+    std::vector<std::vector<float>> & out_logits,
+    const std::string &               gpu) {
     std::lock_guard<std::mutex> lock(io_mutex_);
     out_scores.clear();
     out_logits.clear();
-    if (!worker_alive_locked() && !ensure_loaded_locked(loaded_cfg_)) {
+    if (!ensure_loaded_locked(loaded_cfg_, gpu)) {
         return false;
     }
     json meta = {
@@ -616,11 +628,12 @@ bool WorkerSession::classify_from_embeddings(
     const std::vector<std::string> &        prompts,
     bool                                    return_logits,
     std::vector<std::vector<float>> &       out_scores,
-    std::vector<std::vector<float>> &       out_logits) {
+    std::vector<std::vector<float>> &       out_logits,
+    const std::string &                     gpu) {
     std::lock_guard<std::mutex> lock(io_mutex_);
     out_scores.clear();
     out_logits.clear();
-    if (!worker_alive_locked() && !ensure_loaded_locked(loaded_cfg_)) {
+    if (!ensure_loaded_locked(loaded_cfg_, gpu)) {
         return false;
     }
     const int n_img = (int)image_embeddings.size();

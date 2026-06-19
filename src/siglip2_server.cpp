@@ -510,6 +510,13 @@ int main(int argc, char ** argv) {
             child_argv.push_back(a);
         }
         worker_session = std::make_unique<siglip2::WorkerSession>(argv[0], child_argv);
+        // Default GPU (UUID) for un-targeted (direct / unbounded) requests.
+        // Per-request `gpu` field overrides. Empty = inherit container
+        // CUDA_VISIBLE_DEVICES. Standard env name across all kob services.
+        if (const char * g = std::getenv("WORKER_DEFAULT_GPU")) {
+            worker_session->set_default_gpu(g);
+            fprintf(stderr, "[siglip2-server] default GPU: %s\n", g);
+        }
         fprintf(stderr, "[siglip2-server] worker-isolation: ON (subprocess owns GPU; "
                         "/v1/admin/unload SIGKILLs the worker → 0 VRAM)\n");
     } else {
@@ -704,13 +711,18 @@ int main(int argc, char ** argv) {
             return;
         }
 
+        // `gpu` may arrive as a multipart field (alongside images) or a query
+        // param — collect_field() reads both. Empty → default/inherited card.
+        auto gpu_f = collect_field(req, "gpu");
+        const std::string gpu = gpu_f.empty() ? std::string() : gpu_f.front();
+
         std::vector<std::vector<float>> embs;
         if (worker_session) {
             std::vector<std::string> img_bytes;
             img_bytes.reserve(images.size());
             for (const auto & img : images) img_bytes.push_back(img.content);
             if (!worker_session->encode_images(img_bytes, pooling_str.empty() ? "probe" : pooling_str,
-                                               max_num_patches, /*return_last_hidden=*/false, embs)) {
+                                               max_num_patches, /*return_last_hidden=*/false, embs, gpu)) {
                 send_json(res, 500, json{{"error", worker_session->last_error()}});
                 return;
             }

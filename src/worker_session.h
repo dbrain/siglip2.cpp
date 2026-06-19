@@ -45,8 +45,14 @@ public:
     // SIGKILL + waitpid. Idempotent. Subsequent ensure_loaded() respawns.
     void shutdown();
 
+    // Default GPU (CUDA_VISIBLE_DEVICES value: index or "GPU-..." UUID) for
+    // workers spawned without a per-request override. Empty = inherit the
+    // container env. Lets unbounded/direct requests land on the right card.
+    void set_default_gpu(std::string gpu) { default_gpu_ = std::move(gpu); }
+
     bool         is_alive()      const { return pid_ > 0; }
     pid_t        pid()           const { return pid_; }
+    const std::string & worker_gpu() const { return worker_gpu_; }
     int          hidden_size()   const { return hidden_size_; }
     int          max_position_embeddings() const { return max_pos_; }
     const std::string & last_error() const { return last_error_; }
@@ -54,17 +60,21 @@ public:
     // Vision encode → per-image float embedding (L2-normalized). Pooling is
     // one of "probe" / "pooler" / "mean" — the worker resolves the string.
     // return_last_hidden currently unimplemented (worker returns ok=false).
+    // `gpu` (when non-empty) overrides the target card for this request; if
+    // the resident worker is on a different GPU it is relocated (kill+respawn).
     bool encode_images(
         const std::vector<std::string> & image_bytes,
         const std::string &              pooling,
         int                              max_num_patches,
         bool                             return_last_hidden,
-        std::vector<std::vector<float>> & out_embs);
+        std::vector<std::vector<float>> & out_embs,
+        const std::string &              gpu = std::string());
 
     // Text encode → per-prompt float embedding (L2-normalized).
     bool encode_texts(
         const std::vector<std::string> &  prompts,
-        std::vector<std::vector<float>> & out_embs);
+        std::vector<std::vector<float>> & out_embs,
+        const std::string &               gpu = std::string());
 
     // Full classify pipeline. out_scores / out_logits are (n_img × n_txt).
     bool classify(
@@ -73,7 +83,8 @@ public:
         int                               max_num_patches,
         bool                              return_logits,
         std::vector<std::vector<float>> & out_scores,
-        std::vector<std::vector<float>> & out_logits);
+        std::vector<std::vector<float>> & out_logits,
+        const std::string &               gpu = std::string());
 
     // Score with externally-supplied image embeddings.
     bool classify_from_embeddings(
@@ -81,7 +92,8 @@ public:
         const std::vector<std::string> &        prompts,
         bool                                    return_logits,
         std::vector<std::vector<float>> &       out_scores,
-        std::vector<std::vector<float>> &       out_logits);
+        std::vector<std::vector<float>> &       out_logits,
+        const std::string &                     gpu = std::string());
 
 private:
     bool send_load_req_locked(const WorkerLoadConfig & cfg);
@@ -89,7 +101,10 @@ private:
     // Spawn + LOAD round-trip without taking io_mutex_ (caller holds it).
     // Used by ensure_loaded() and by the request methods to self-heal
     // when they observe the worker died during a racing /unload.
-    bool ensure_loaded_locked(const WorkerLoadConfig & cfg);
+    // `want_gpu` empty → use default_gpu_. Respawns if the resident worker's
+    // GPU differs from the resolved target (relocation).
+    bool ensure_loaded_locked(const WorkerLoadConfig & cfg,
+                              const std::string & want_gpu);
     // True if a request can proceed without respawning. Caller holds lock.
     bool worker_alive_locked() const { return pid_ > 0 && fd_ >= 0 && loaded_ok_; }
 
@@ -97,6 +112,8 @@ private:
     std::vector<std::string>   extra_argv_;
     WorkerLoadConfig           loaded_cfg_;
     bool                       loaded_ok_  = false;
+    std::string                default_gpu_;   // CVD for un-targeted spawns
+    std::string                worker_gpu_;    // GPU the live worker is pinned to
 
     pid_t                      pid_        = -1;
     int                        fd_         = -1;

@@ -116,9 +116,16 @@ bool unpack_multi_blob_payload(
 // Returns the child pid on success and writes the parent-side fd to
 // `*out_parent_fd`. Returns -1 on failure. `extra_argv` is appended after
 // "--worker N" so the child sees the same load-time arguments.
+//
+// `cuda_visible_devices`, when non-empty, is set as CUDA_VISIBLE_DEVICES in
+// the child *before* execv — pinning the worker to a specific physical GPU.
+// The parent stays CUDA-free (worker-isolation), so changing it per-spawn is
+// safe and lets a caller place / relocate the worker onto either card. Empty
+// = inherit the parent/container environment (current default behaviour).
 pid_t spawn_worker(const char * self_argv0,
                    const std::vector<std::string> & extra_argv,
-                   int * out_parent_fd);
+                   int * out_parent_fd,
+                   const std::string & cuda_visible_devices = "");
 
 } // namespace siglip2
 
